@@ -1446,6 +1446,99 @@ static void quantize_row_q4_K_impl(const float * GGML_RESTRICT x, block_q4_K * G
     }
 }
 
+static inline void q4_k_f_select_outliers(const float * GGML_RESTRICT x, const float * GGML_RESTRICT weights, int * out_idx, int n_out) {
+    float out_score[Q4_K_F_OUTLIERS];
+    for (int i = 0; i < n_out; ++i) {
+        out_idx[i] = 0;
+        out_score[i] = -FLT_MAX;
+    }
+
+    for (int i = 0; i < QK_K; ++i) {
+        const float w = weights ? weights[i] : 1.0f;
+        const float score = fabsf(x[i]) * w;
+
+        int min_i = 0;
+        float min_s = out_score[0];
+        for (int j = 1; j < n_out; ++j) {
+            if (out_score[j] < min_s) {
+                min_s = out_score[j];
+                min_i = j;
+            }
+        }
+
+        if (score > min_s) {
+            out_score[min_i] = score;
+            out_idx[min_i] = i;
+        }
+    }
+}
+
+void quantize_row_q4_K_F_ref(const float * GGML_RESTRICT x, block_q4_K_F * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_K == 0);
+    const int nb = k / QK_K;
+
+    float wtmp[QK_K];
+    int out_idx[Q4_K_F_OUTLIERS];
+
+    for (int i = 0; i < nb; ++i) {
+        q4_k_f_select_outliers(x, NULL, out_idx, Q4_K_F_OUTLIERS);
+
+        for (int j = 0; j < QK_K; ++j) {
+            wtmp[j] = x[j];
+        }
+        for (int o = 0; o < Q4_K_F_OUTLIERS; ++o) {
+            const int idx = out_idx[o];
+            y[i].outlier_idx[o] = (uint16_t) idx;
+            y[i].outlier_val[o] = GGML_FP32_TO_FP16(x[idx]);
+            wtmp[idx] = 0.0f;
+        }
+
+        quantize_row_q4_K_ref(wtmp, (block_q4_K *) &y[i], QK_K);
+        x += QK_K;
+    }
+}
+
+static void quantize_row_q4_K_F_impl(const float * GGML_RESTRICT x, block_q4_K_F * GGML_RESTRICT y, int64_t n_per_row, const float * quant_weights) {
+    assert(n_per_row % QK_K == 0);
+    const int64_t nb = n_per_row / QK_K;
+
+    float wtmp[QK_K];
+    int out_idx[Q4_K_F_OUTLIERS];
+
+    for (int64_t i = 0; i < nb; ++i) {
+        const float * w = quant_weights ? quant_weights + i * QK_K : NULL;
+        q4_k_f_select_outliers(x, w, out_idx, Q4_K_F_OUTLIERS);
+
+        for (int j = 0; j < QK_K; ++j) {
+            wtmp[j] = x[j];
+        }
+        for (int o = 0; o < Q4_K_F_OUTLIERS; ++o) {
+            const int idx = out_idx[o];
+            y[i].outlier_idx[o] = (uint16_t) idx;
+            y[i].outlier_val[o] = GGML_FP32_TO_FP16(x[idx]);
+            wtmp[idx] = 0.0f;
+        }
+
+        quantize_row_q4_K_impl(wtmp, (block_q4_K *) &y[i], QK_K, w);
+        x += QK_K;
+    }
+}
+
+void dequantize_row_q4_K_F(const block_q4_K_F * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_K == 0);
+    const int nb = k / QK_K;
+
+    for (int i = 0; i < nb; ++i) {
+        dequantize_row_q4_K((const block_q4_K *) &x[i], y + i * QK_K, QK_K);
+        for (int o = 0; o < Q4_K_F_OUTLIERS; ++o) {
+            const uint16_t idx = x[i].outlier_idx[o];
+            if (idx < QK_K) {
+                y[i * QK_K + idx] += GGML_FP16_TO_FP32(x[i].outlier_val[o]);
+            }
+        }
+    }
+}
+
 size_t quantize_q4_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     size_t row_size = ggml_row_size(GGML_TYPE_Q4_K, n_per_row);
     if (!quant_weights) {
@@ -1455,6 +1548,21 @@ size_t quantize_q4_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
         char * qrow = (char *)dst;
         for (int64_t row = 0; row < nrow; ++row) {
             quantize_row_q4_K_impl(src, (block_q4_K*)qrow, n_per_row, quant_weights);
+            src += n_per_row;
+            qrow += row_size;
+        }
+    }
+    return nrow * row_size;
+}
+
+size_t quantize_q4_K_F(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    size_t row_size = ggml_row_size(GGML_TYPE_Q4_K_F, n_per_row);
+    if (!quant_weights) {
+        quantize_row_q4_K_F_ref(src, dst, (int64_t)nrow*n_per_row);
+    } else {
+        char * qrow = (char *)dst;
+        for (int64_t row = 0; row < nrow; ++row) {
+            quantize_row_q4_K_F_impl(src, (block_q4_K_F*)qrow, n_per_row, quant_weights);
             src += n_per_row;
             qrow += row_size;
         }
@@ -5236,6 +5344,23 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_Q4_K:
             {
                 VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_K, data, nb, d, dmin);
+            } break;
+        case GGML_TYPE_Q4_K_F:
+            {
+                const block_q4_K_F * q = (const block_q4_K_F *) data;
+                for (size_t i = 0; i < nb; ++i) {
+                    if (!validate_fp16(q[i].d, i) || !validate_fp16(q[i].dmin, i)) {
+                        return false;
+                    }
+                    for (int o = 0; o < Q4_K_F_OUTLIERS; ++o) {
+                        if (!validate_fp16(q[i].outlier_val[o], i)) {
+                            return false;
+                        }
+                        if (q[i].outlier_idx[o] >= QK_K) {
+                            return false;
+                        }
+                    }
+                }
             } break;
         case GGML_TYPE_Q5_K:
             {

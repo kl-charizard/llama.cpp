@@ -12,6 +12,7 @@
 #include "llama-memory-recurrent.h"
 
 #include "ggml-cpp.h"
+#include "ggml-awq.h"
 
 #include "models/models.h"
 
@@ -465,6 +466,9 @@ struct llama_model::impl {
     std::vector<layer_dev> dev_layer;
 
     bool has_tensor_overrides;
+
+    std::vector<std::unique_ptr<ggml_awq_tensor_extra>> awq_extras;
+    std::vector<std::unique_ptr<uint32_t[]>> awq_indices;
 };
 
 llama_model::llama_model(const llama_model_params & params) : params(params), pimpl(std::make_unique<impl>()) {
@@ -2823,7 +2827,63 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     return t;
                 }
             }
-            return ml.create_tensor(ctx, tn, ne, flags);
+
+            ggml_tensor * t = ml.create_tensor(ctx, tn, ne, flags);
+            if (t && t->extra == nullptr) {
+                std::vector<uint32_t> indices;
+                const std::string key_base = std::string("quant.channel_protection.") + tn.str();
+                const std::string idx_key = key_base + ".indices";
+                if (ml.get_arr(idx_key, indices, false) && !indices.empty()) {
+                    uint32_t count = 0;
+                    uint32_t n_expert = 1;
+                    const std::string key_count = key_base + ".count";
+                    const std::string key_expert = key_base + ".expert_count";
+                    if (!ml.get_key(key_count, count, false)) {
+                        count = (uint32_t) indices.size();
+                    }
+                    ml.get_key(key_expert, n_expert, false);
+
+                    if (count == 0 || n_expert == 0 || indices.size() != (size_t) count * (size_t) n_expert) {
+                        LLAMA_LOG_WARN("invalid AWQ metadata for %s: count=%u expert_count=%u indices=%zu\n",
+                            tn.str().c_str(), count, n_expert, indices.size());
+                        return t;
+                    }
+
+                    const std::string awq_name = tn.str() + GGML_AWQ_TENSOR_SUFFIX;
+                    const ggml_tensor * awq_meta = ml.get_tensor_meta(awq_name.c_str());
+                    if (!awq_meta) {
+                        LLAMA_LOG_WARN("missing AWQ side tensor %s for %s\n", awq_name.c_str(), tn.str().c_str());
+                    } else {
+                        ggml_tensor * awq_tensor = ggml_get_tensor(ctx, awq_name.c_str());
+                        if (!awq_tensor) {
+                            const int awq_ndims = ggml_n_dims(awq_meta);
+                            if (awq_ndims == 2) {
+                                awq_tensor = ml.create_tensor(ctx, awq_name, { awq_meta->ne[0], awq_meta->ne[1] }, 0);
+                            } else if (awq_ndims == 3) {
+                                awq_tensor = ml.create_tensor(ctx, awq_name, { awq_meta->ne[0], awq_meta->ne[1], awq_meta->ne[2] }, 0);
+                            } else if (awq_ndims == 4) {
+                                awq_tensor = ml.create_tensor(ctx, awq_name, { awq_meta->ne[0], awq_meta->ne[1], awq_meta->ne[2], awq_meta->ne[3] }, 0);
+                            }
+                        }
+
+                        if (awq_tensor && t->type == GGML_TYPE_Q4_K_F) {
+                            auto extra = std::make_unique<ggml_awq_tensor_extra>();
+                            auto idx_buf = std::make_unique<uint32_t[]>(indices.size());
+                            memcpy(idx_buf.get(), indices.data(), indices.size() * sizeof(uint32_t));
+
+                            extra->n = count;
+                            extra->n_expert = n_expert;
+                            extra->idx = idx_buf.get();
+                            extra->weights = awq_tensor;
+
+                            t->extra = extra.get();
+                            pimpl->awq_indices.emplace_back(std::move(idx_buf));
+                            pimpl->awq_extras.emplace_back(std::move(extra));
+                        }
+                    }
+                }
+            }
+            return t;
         };
 
         layers.resize(n_layer);

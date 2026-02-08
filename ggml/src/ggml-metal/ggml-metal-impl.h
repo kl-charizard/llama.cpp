@@ -384,6 +384,26 @@ typedef struct {
 } ggml_metal_kargs_mul_mm;
 
 typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    int32_t  ne3;
+    uint64_t nb10;
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nb13;
+    uint64_t nbw0;
+    uint64_t nbw1;
+    uint64_t nbw2;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+    uint32_t n_awq;
+    uint32_t n_expert;
+} ggml_metal_kargs_mul_mat_awq_corr;
+
+typedef struct {
     int32_t  ne00;
     int32_t  ne01;
     int32_t  ne02;
@@ -427,6 +447,44 @@ typedef struct {
 } ggml_metal_kargs_mul_mv_ext;
 
 typedef struct {
+    int32_t  ne10;
+    int32_t  ne11;
+    int32_t  ne12;
+    int32_t  ne13;
+    uint64_t nb10;
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nb13;
+    uint64_t nb10_q;
+    uint64_t nb11_q;
+    uint64_t nb12_q;
+    uint64_t nb13_q;
+    int32_t  tile_size;
+    int32_t  ntiles;
+} ggml_metal_kargs_q8_0_tile;
+
+typedef struct {
+    int32_t  ne00;
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    int32_t  ne3;
+    uint64_t nb01;
+    uint64_t nb02;
+    uint64_t nb03;
+    uint64_t nb10;
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nb13;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+    int16_t  r2;
+    int16_t  r3;
+} ggml_metal_kargs_mul_mat_q4_k_f_outlier_corr;
+
+typedef struct {
     int32_t  ne02;
     int32_t  ne10;
     int32_t  ne11;  // n_expert_used (bcast)
@@ -455,6 +513,26 @@ typedef struct {
     int16_t  r2;
     int16_t  r3;
 } ggml_metal_kargs_mul_mm_id;
+
+typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    int32_t  ne11;
+    uint64_t nb10;
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nbw0;
+    uint64_t nbw1;
+    uint64_t nbw2;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb_ids0;
+    uint64_t nb_ids1;
+    uint32_t n_awq;
+    uint32_t n_expert;
+} ggml_metal_kargs_mul_mat_id_awq_corr;
 
 typedef struct {
     int32_t  nei0;

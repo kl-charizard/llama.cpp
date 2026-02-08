@@ -49,6 +49,7 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
     { "Q4_K",     LLAMA_FTYPE_MOSTLY_Q4_K_M,   "alias for Q4_K_M",                  },
     { "Q4_K_S",   LLAMA_FTYPE_MOSTLY_Q4_K_S,   " 4.37G, +0.2689 ppl @ Llama-3-8B",  },
     { "Q4_K_M",   LLAMA_FTYPE_MOSTLY_Q4_K_M,   " 4.58G, +0.1754 ppl @ Llama-3-8B",  },
+    { "Q4_K_F",   LLAMA_FTYPE_MOSTLY_Q4_K_F,   " Q4_K_F (QFuse, outlier-aware)",    },
     { "Q5_K",     LLAMA_FTYPE_MOSTLY_Q5_K_M,   "alias for Q5_K_M",                  },
     { "Q5_K_S",   LLAMA_FTYPE_MOSTLY_Q5_K_S,   " 5.21G, +0.1049 ppl @ Llama-3-8B",  },
     { "Q5_K_M",   LLAMA_FTYPE_MOSTLY_Q5_K_M,   " 5.33G, +0.0569 ppl @ Llama-3-8B",  },
@@ -120,6 +121,7 @@ static bool try_parse_ftype(const std::string & ftype_str_in, llama_ftype & ftyp
 static void usage(const char * executable) {
     printf("usage: %s [--help] [--allow-requantize] [--leave-output-tensor] [--pure] [--imatrix] [--include-weights]\n", executable);
     printf("       [--exclude-weights] [--output-tensor-type] [--token-embedding-type] [--tensor-type] [--tensor-type-file] [--prune-layers] [--keep-split] [--override-kv]\n");
+    printf("       [--awq] [--awq-ratio]\n");
     printf("       model-f32.gguf [model-quant.gguf] type [nthreads]\n\n");
     printf("  --allow-requantize: Allows requantizing tensors that have already been quantized. Warning: This can severely reduce quality compared to quantizing from 16bit or 32bit\n");
     printf("  --leave-output-tensor: Will leave output.weight un(re)quantized. Increases model size but may also increase quality, especially when requantizing\n");
@@ -138,6 +140,8 @@ static void usage(const char * executable) {
     printf("  --keep-split: will generate quantized model in the same shards as input\n");
     printf("  --override-kv KEY=TYPE:VALUE\n");
     printf("      Advanced option to override model metadata by key in the quantized model. May be specified multiple times.\n");
+    printf("  --awq: enable AWQ-style channel protection metadata + mixed-precision handling (Q4_K_F only)\n");
+    printf("  --awq-ratio R: fraction of channels to protect (default: 0.01)\n");
     printf("Note: --include-weights and --exclude-weights cannot be used together\n");
     printf("\nAllowed quantization types:\n");
     for (const auto & it : QUANT_OPTIONS) {
@@ -535,6 +539,18 @@ int main(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--keep-split") == 0) {
             params.keep_split = true;
+        } else if (strcmp(argv[arg_idx], "--awq") == 0) {
+            params.awq_protect = true;
+        } else if (strcmp(argv[arg_idx], "--awq-ratio") == 0) {
+            if (arg_idx < argc-1) {
+                params.awq_ratio = std::stof(argv[++arg_idx]);
+                if (params.awq_ratio <= 0.0f || params.awq_ratio > 1.0f) {
+                    printf("\n%s: --awq-ratio must be in (0, 1]\n\n", __func__);
+                    usage(argv[0]);
+                }
+            } else {
+                usage(argv[0]);
+            }
         } else {
             usage(argv[0]);
         }
@@ -709,4 +725,3 @@ int main(int argc, char ** argv) {
 
     return 0;
 }
-

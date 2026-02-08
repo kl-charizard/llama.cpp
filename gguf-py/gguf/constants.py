@@ -3594,6 +3594,7 @@ class GGMLQuantizationType(IntEnum):
     TQ1_0   = 34
     TQ2_0   = 35
     MXFP4   = 39
+    Q4_K_F  = 40
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -3645,6 +3646,8 @@ class LlamaFileType(IntEnum):
     # MOSTLY_Q4_0_8_8      = 35  # removed from gguf files, use Q4_0 and runtime repack
     MOSTLY_TQ1_0         = 36  # except 1d tensors
     MOSTLY_TQ2_0         = 37  # except 1d tensors
+    MOSTLY_MXFP4_MOE     = 38  # except 1d tensors
+    MOSTLY_Q4_K_F        = 39  # except 1d tensors
 
     GUESSED              = 1024  # not specified in the model file
 
@@ -3715,6 +3718,7 @@ class VisionProjectorType:
 
 # Items here are (block size, type size)
 QK_K = 256
+Q4_K_F_OUTLIERS = 4
 GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.F32:     (1, 4),
     GGMLQuantizationType.F16:     (1, 2),
@@ -3727,6 +3731,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q2_K:    (256, 2 + 2 + QK_K // 16 + QK_K // 4),
     GGMLQuantizationType.Q3_K:    (256, 2 + QK_K // 4 + QK_K // 8 + 12),
     GGMLQuantizationType.Q4_K:    (256, 2 + 2 + QK_K // 2 + 12),
+    GGMLQuantizationType.Q4_K_F:  (256, 2 + 2 + QK_K // 2 + 12 + 16),
     GGMLQuantizationType.Q5_K:    (256, 2 + 2 + QK_K // 2 + QK_K // 8 + 12),
     GGMLQuantizationType.Q6_K:    (256, 2 + QK_K // 2 + QK_K // 4 + QK_K // 16),
     GGMLQuantizationType.Q8_K:    (256, 4 + QK_K + QK_K // 8),

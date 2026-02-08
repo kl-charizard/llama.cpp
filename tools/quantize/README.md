@@ -33,6 +33,12 @@ python3 convert_hf_to_gguf.py ./models/mymodel/
 # quantize the model to 4-bits (using Q4_K_M method)
 ./llama-quantize ./models/mymodel/ggml-model-f16.gguf ./models/mymodel/ggml-model-Q4_K_M.gguf Q4_K_M
 
+# quantize the model to 4-bits (using Q4_K_F method)
+./llama-quantize ./models/mymodel/ggml-model-f16.gguf ./models/mymodel/ggml-model-Q4_K_F.gguf Q4_K_F
+
+# quantize the model to 4-bits with AWQ channel protection (Q4_K_F only)
+./llama-quantize --awq --awq-ratio 0.01 ./models/mymodel/ggml-model-f16.gguf ./models/mymodel/ggml-model-Q4_K_F-awq.gguf Q4_K_F
+
 # update the gguf filetype to current version if older version is now unsupported
 ./llama-quantize ./models/mymodel/ggml-model-Q4_K_M.gguf ./models/mymodel/ggml-model-Q4_K_M-v2.gguf COPY
 ```
@@ -54,6 +60,8 @@ Options:
 * `--output-tensor-type` use a specific quant type for the output.weight tensor
 * `--token-embedding-type` use a specific quant type for the token embeddings tensor
 * `--keep-split` will generate the quantized model in the same shards as the input file otherwise it will produce a single quantized file
+* `--awq` enable AWQ-style channel protection metadata + mixed-precision handling (Q4_K_F only)
+* `--awq-ratio` fraction of channels to protect (default 0.01)
 
 Advanced options:
 * `--tensor-type` quantize specific tensor(s) to specific quant types. Supports regex syntax. May be specified multiple times.

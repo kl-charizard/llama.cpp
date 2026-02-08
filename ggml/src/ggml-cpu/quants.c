@@ -74,6 +74,12 @@ void quantize_row_q4_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
     quantize_row_q4_K_ref(x, y, k);
 }
 
+void quantize_row_q4_K_F(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_K == 0);
+    block_q4_K_F * GGML_RESTRICT y = vy;
+    quantize_row_q4_K_F_ref(x, y, k);
+}
+
 // ====================== 5-bit (de)-quantization
 
 void quantize_row_q5_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
@@ -619,6 +625,47 @@ void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
         sumf -= dmin * sumi;
     }
     for (int l = 0; l < 8; ++l) sumf += sums[l];
+    *s = sumf;
+}
+
+void ggml_vec_dot_q4_K_F_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_K == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q4_K_F * GGML_RESTRICT x = vx;
+    const block_q8_0   * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_K;
+    float sumf = 0.0f;
+
+    float wtmp[QK_K];
+
+    for (int i = 0; i < nb; ++i) {
+        dequantize_row_q4_K((const block_q4_K *) &x[i], wtmp, QK_K);
+        for (int o = 0; o < Q4_K_F_OUTLIERS; ++o) {
+            const uint16_t idx = x[i].outlier_idx[o];
+            if (idx < QK_K) {
+                wtmp[idx] += GGML_CPU_FP16_TO_FP32(x[i].outlier_val[o]);
+            }
+        }
+
+        for (int b = 0; b < QK_K / QK8_0; ++b) {
+            const block_q8_0 * yb = &y[i * (QK_K / QK8_0) + b];
+            const float d = GGML_CPU_FP16_TO_FP32(yb->d);
+            const int8_t * q8 = yb->qs;
+            const float * w   = wtmp + b * QK8_0;
+            float sum = 0.0f;
+            for (int j = 0; j < QK8_0; ++j) {
+                sum += w[j] * (float) q8[j];
+            }
+            sumf += sum * d;
+        }
+    }
+
     *s = sumf;
 }
 

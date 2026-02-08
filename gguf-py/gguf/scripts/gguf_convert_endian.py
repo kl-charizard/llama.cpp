@@ -50,6 +50,26 @@ def byteswap_q4_k(tensor, block_offs):
     delta = tensor.data[block_offs + 2:block_offs + 4].view(dtype=np.uint16)
     delta.byteswap(inplace=True)
 
+def byteswap_q4_k_f(tensor, block_offs):
+    # Each block_q4_k_f consists of 2 f16 values, 140 bytes, then 4 uint16 indices and 4 f16 outlier values.
+
+    # Byte-Swap f16 sized fields
+    delta = tensor.data[block_offs:block_offs + 2].view(dtype=np.uint16)
+    delta.byteswap(inplace=True)
+
+    delta = tensor.data[block_offs + 2:block_offs + 4].view(dtype=np.uint16)
+    delta.byteswap(inplace=True)
+
+    # Outlier indices
+    outlier_idx_offs = block_offs + 2 + 2 + 12 + 128
+    outlier_idx = tensor.data[outlier_idx_offs:outlier_idx_offs + 8].view(dtype=np.uint16)
+    outlier_idx.byteswap(inplace=True)
+
+    # Outlier values (fp16)
+    outlier_val_offs = outlier_idx_offs + 8
+    outlier_val = tensor.data[outlier_val_offs:outlier_val_offs + 8].view(dtype=np.uint16)
+    outlier_val.byteswap(inplace=True)
+
 
 def byteswap_q6_k(tensor, block_offs):
     # Each block_q6_k consists of 208 int8 values followed by 1 f16 value.
@@ -63,6 +83,7 @@ byteswap_tensors = {
     gguf.GGMLQuantizationType.Q4_0:  byteswap_q4_0,
     gguf.GGMLQuantizationType.Q8_0:  byteswap_q8_0,
     gguf.GGMLQuantizationType.Q4_K:  byteswap_q4_k,
+    gguf.GGMLQuantizationType.Q4_K_F:  byteswap_q4_k_f,
     gguf.GGMLQuantizationType.Q6_K:  byteswap_q6_k,
     gguf.GGMLQuantizationType.MXFP4: byteswap_noop,
 }

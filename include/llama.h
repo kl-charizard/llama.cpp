@@ -152,6 +152,7 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_TQ1_0         = 36, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_TQ2_0         = 37, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_Q4_K_F        = 39, // except 1d tensors
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -389,6 +390,9 @@ extern "C" {
         bool only_copy;                       // only copy tensors - ftype, allow_requantize and quantize_output_tensor are ignored
         bool pure;                            // quantize all tensors to the default type
         bool keep_split;                      // quantize to the same number of shards
+        bool awq_protect;                     // enable AWQ-style channel protection (Q4_K_F only)
+        float awq_ratio;                      // fraction of channels to protect (e.g. 0.01 = 1%)
+        int32_t awq_min_channels;             // minimum number of channels to protect
         void * imatrix;                       // pointer to importance matrix data
         void * kv_overrides;                  // pointer to vector containing overrides
         void * tensor_types;                  // pointer to vector containing tensor types

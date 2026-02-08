@@ -13,6 +13,7 @@
 #include "vec.h"
 #include "ops.h"
 #include "ggml.h"
+#include "ggml-awq.h"
 #include "common.h"
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
@@ -291,6 +292,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
 #else
         .nrows                    = 1,
 #endif
+    },
+    [GGML_TYPE_Q4_K_F] = {
+        .from_float               = quantize_row_q4_K_F,
+        .vec_dot                  = ggml_vec_dot_q4_K_F_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
     },
     [GGML_TYPE_Q5_K] = {
         .from_float               = quantize_row_q5_K,
@@ -1226,6 +1233,73 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     }
 }
 
+static void ggml_compute_forward_mul_mat_awq_correction(
+    const struct ggml_tensor * src0,
+    const struct ggml_tensor * src1,
+    struct ggml_tensor * dst,
+    const struct ggml_awq_tensor_extra * awq,
+    const int64_t ir0_start,
+    const int64_t ir0_end,
+    const int64_t ir1_start,
+    const int64_t ir1_end) {
+
+    if (!awq || awq->n == 0 || !awq->weights) {
+        return;
+    }
+
+    const struct ggml_tensor * w = awq->weights;
+    if (awq->n_expert > 1) {
+        // AWQ expert lists are only valid for mul_mat_id
+        return;
+    }
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    GGML_ASSERT(src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(w->type == GGML_TYPE_F16);
+    GGML_ASSERT(w->ne[0] == (int64_t) awq->n);
+    GGML_ASSERT(w->ne[1] == ne01);
+
+    for (int64_t ir1 = ir1_start; ir1 < ir1_end; ++ir1) {
+        const int64_t i13 = (ir1 / (ne12 * ne1));
+        const int64_t i12 = (ir1 - i13 * ne12 * ne1) / ne1;
+        const int64_t i11 = (ir1 - i13 * ne12 * ne1 - i12 * ne1);
+
+        const char * src1_row = (const char *) src1->data + i11*nb11 + i12*nb12 + i13*nb13;
+        float * dst_col = (float *) ((char *) dst->data + i11*nb1 + i12*nb2 + i13*nb3);
+
+        const float * src1_f32 = (const float *) src1_row;
+
+        for (int64_t ir0 = ir0_start; ir0 < ir0_end; ++ir0) {
+            const char * wrow = (const char *) w->data + ir0 * w->nb[1];
+            float acc = 0.0f;
+            for (uint32_t k = 0; k < awq->n; ++k) {
+                const uint32_t c = awq->idx[k];
+                const float x = src1_f32[c];
+                const ggml_fp16_t * wptr = (const ggml_fp16_t *) (wrow + k * w->nb[0]);
+                acc += GGML_FP16_TO_FP32(*wptr) * x;
+            }
+            dst_col[ir0] += acc;
+        }
+    }
+}
+
+static void quantize_row_q8_0_with_scale(const float * GGML_RESTRICT x, block_q8_0 * GGML_RESTRICT y, int64_t k, float scale) {
+    assert(k % QK8_0 == 0);
+    const int nb = k / QK8_0;
+    const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        y[i].d = GGML_CPU_FP32_TO_FP16(scale);
+        for (int j = 0; j < QK8_0; ++j) {
+            const float v = x[i * QK8_0 + j] * inv_scale;
+            int q = (int) nearbyintf(v);
+            q = MAX(-127, MIN(127, q));
+            y[i].qs[j] = (int8_t) q;
+        }
+    }
+}
+
 void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -1299,6 +1373,37 @@ UseGgmlGemm1:;
         assert(params->wsize >= ne13*nbw3);
         GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
+        if (src0->type == GGML_TYPE_Q4_K_F && vec_dot_type == GGML_TYPE_Q8_0) {
+            const int64_t tile_size = 128;
+            const int64_t rows_per_thread = (ne11 + nth - 1) / nth;
+            const int64_t row_start = ith * rows_per_thread;
+            const int64_t row_end = MIN(row_start + rows_per_thread, ne11);
+
+            for (int64_t i13 = 0; i13 < ne13; ++i13) {
+                for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                    for (int64_t i11 = row_start; i11 < row_end; ++i11) {
+                        const int64_t tile_start = (i11 / tile_size) * tile_size;
+                        const int64_t tile_end = MIN(tile_start + tile_size, ne11);
+
+                        float max_abs = 0.0f;
+                        for (int64_t it = tile_start; it < tile_end; ++it) {
+                            const float * src_row = (const float *)((const char *) src1->data + i13*nb13 + i12*nb12 + it*nb11);
+                            for (int64_t j = 0; j < ne10; ++j) {
+                                const float av = fabsf(src_row[j]);
+                                if (av > max_abs) {
+                                    max_abs = av;
+                                }
+                            }
+                        }
+                        const float act_scale = max_abs > 0.0f ? max_abs / 127.0f : 0.0f;
+
+                        const float * src_row = (const float *)((const char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11);
+                        char * dst_row = wdata + i13*nbw3 + i12*nbw2 + i11*nbw1;
+                        quantize_row_q8_0_with_scale(src_row, (block_q8_0 *) dst_row, ne10, act_scale);
+                    }
+                }
+            }
+        } else {
     #if 0
         for (int64_t i13 = 0; i13 < ne13; ++i13) {
             for (int64_t i12 = 0; i12 < ne12; ++i12) {
@@ -1323,6 +1428,7 @@ UseGgmlGemm1:;
             }
         }
     #endif
+        }
     }
 
     if (ith == 0) {
@@ -1411,6 +1517,10 @@ UseGgmlGemm2:;
             num_rows_per_vec_dot = 1;
         }
         ggml_compute_forward_mul_mat_one_chunk(params, dst, src0->type, num_rows_per_vec_dot, ir0_start, ir0_end, ir1_start, ir1_end);
+        if (src0->type == GGML_TYPE_Q4_K_F && src0->extra && src1->type == GGML_TYPE_F32) {
+            ggml_compute_forward_mul_mat_awq_correction(src0, src1, dst, (const struct ggml_awq_tensor_extra *) src0->extra,
+                ir0_start, ir0_end, ir1_start, ir1_end);
+        }
 
         if (nth >= nchunk0 * nchunk1) {
             break;
@@ -1443,7 +1553,8 @@ static void ggml_compute_forward_mul_mat_id_one_chunk(
     const struct mmid_row_mapping * matrix_rows,
     const size_t row_size,
     const bool src1_cont,
-    const void * wdata) {
+    const void * wdata,
+    const struct ggml_awq_tensor_extra * awq) {
 
     GGML_TENSOR_BINARY_OP_LOCALS
 
@@ -1482,8 +1593,28 @@ static void ggml_compute_forward_mul_mat_id_one_chunk(
 
                 float * dst_col = (float *) ((char *) dst->data + (i1*nb1 + i2*nb2));
 
+                const float * src1_f32 = (const float *) ((const char *) src1->data + i11*nb11 + i12*nb12);
+
                 for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir0_end; ++ir0) {
                     vec_dot(ne00, &tmp[ir0 - iir0], 0, src0_cur + ir0*nb01, 0, src1_col, 0, 1);
+                }
+
+                if (awq && awq->n > 0 && awq->weights) {
+                    const struct ggml_tensor * w = awq->weights;
+                    const uint32_t n_expert = awq->n_expert > 0 ? awq->n_expert : 1;
+                    const uint32_t * idx = awq->idx + (n_expert > 1 ? (size_t) cur_a * awq->n : 0);
+                    const char * wbase = (const char *) w->data + (n_expert > 1 ? (int64_t) cur_a * w->nb[2] : 0);
+
+                    for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir0_end; ++ir0) {
+                        const char * wrow = wbase + ir0 * w->nb[1];
+                        float acc = 0.0f;
+                        for (uint32_t k = 0; k < awq->n; ++k) {
+                            const uint32_t c = idx[k];
+                            const ggml_fp16_t * wptr = (const ggml_fp16_t *) (wrow + (size_t) k * w->nb[0]);
+                            acc += GGML_FP16_TO_FP32(*wptr) * src1_f32[c];
+                        }
+                        tmp[ir0 - iir0] += acc;
+                    }
                 }
 
                 memcpy(&dst_col[iir0], tmp, (MIN(iir0 + blck_0, ir0_end) - iir0)*sizeof(float));
@@ -1562,6 +1693,37 @@ static void ggml_compute_forward_mul_mat_id(
         assert(params->wsize >= ne13*nbw3);
         GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
+        if (src0->type == GGML_TYPE_Q4_K_F && vec_dot_type == GGML_TYPE_Q8_0) {
+            const int64_t tile_size = 128;
+            const int64_t rows_per_thread = (ne11 + nth - 1) / nth;
+            const int64_t row_start = ith * rows_per_thread;
+            const int64_t row_end = MIN(row_start + rows_per_thread, ne11);
+
+            for (int64_t i13 = 0; i13 < ne13; ++i13) {
+                for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                    for (int64_t i11 = row_start; i11 < row_end; ++i11) {
+                        const int64_t tile_start = (i11 / tile_size) * tile_size;
+                        const int64_t tile_end = MIN(tile_start + tile_size, ne11);
+
+                        float max_abs = 0.0f;
+                        for (int64_t it = tile_start; it < tile_end; ++it) {
+                            const float * src_row = (const float *)((const char *) src1->data + i13*nb13 + i12*nb12 + it*nb11);
+                            for (int64_t j = 0; j < ne10; ++j) {
+                                const float av = fabsf(src_row[j]);
+                                if (av > max_abs) {
+                                    max_abs = av;
+                                }
+                            }
+                        }
+                        const float act_scale = max_abs > 0.0f ? max_abs / 127.0f : 0.0f;
+
+                        const float * src_row = (const float *)((const char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11);
+                        char * dst_row = wdata + i13*nbw3 + i12*nbw2 + i11*nbw1;
+                        quantize_row_q8_0_with_scale(src_row, (block_q8_0 *) dst_row, ne10, act_scale);
+                    }
+                }
+            }
+        } else {
 #if 0
         for (int64_t i13 = 0; i13 < ne13; ++i13) {
             for (int64_t i12 = ith; i12 < ne12; i12 += nth) {
@@ -1586,6 +1748,7 @@ static void ggml_compute_forward_mul_mat_id(
             }
         }
 #endif
+        }
     }
 
     if (ith == 0) {
@@ -1663,7 +1826,10 @@ static void ggml_compute_forward_mul_mat_id(
             ggml_compute_forward_mul_mat_id_one_chunk(
                 dst, src0, src1, ids, cur_a,
                 ir0_start, ir0_end, ir1_start, ir1_end,
-                src0_cur, matrix_rows, row_size, src1_cont, wdata
+                src0_cur, matrix_rows, row_size, src1_cont, wdata,
+                (src0->type == GGML_TYPE_Q4_K_F && src0->extra && src1->type == GGML_TYPE_F32)
+                    ? (const struct ggml_awq_tensor_extra *) src0->extra
+                    : NULL
             );
 
             if (nth >= nchunk0 * nchunk1) {

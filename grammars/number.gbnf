@@ -1,0 +1,4 @@
+root ::= num
+num ::= sign? [0-9]+ ws
+sign ::= "-"
+ws ::= [ \t\n]*

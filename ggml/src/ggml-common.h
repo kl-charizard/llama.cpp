@@ -305,6 +305,23 @@ typedef struct {
 } block_q4_K;
 static_assert(sizeof(block_q4_K) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K block size/padding");
 
+// 4-bit quantization with sparse outliers (Q4_K_F)
+#define Q4_K_F_OUTLIERS 4
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d;    // super-block scale for quantized scales
+            ggml_half dmin; // super-block scale for quantized mins
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t  scales[K_SCALE_SIZE];          // scales and mins, quantized with 6 bits
+    uint8_t  qs[QK_K/2];                    // 4-bit quants (outliers masked)
+    uint16_t outlier_idx[Q4_K_F_OUTLIERS];  // indices in [0, QK_K)
+    ggml_half outlier_val[Q4_K_F_OUTLIERS]; // FP16 outlier values
+} block_q4_K_F;
+static_assert(sizeof(block_q4_K_F) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2 + Q4_K_F_OUTLIERS*(sizeof(uint16_t) + sizeof(ggml_half)), "wrong q4_K_F block size/padding");
+
 // 5-bit quantization
 // 8 blocks of 32 elements each
 // weight is represented as x = a * q + b

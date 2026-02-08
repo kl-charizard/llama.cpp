@@ -5,7 +5,7 @@ from math import log2, ceil
 
 from numpy.typing import DTypeLike
 
-from .constants import GGML_QUANT_SIZES, GGMLQuantizationType, QK_K
+from .constants import GGML_QUANT_SIZES, GGMLQuantizationType, QK_K, Q4_K_F_OUTLIERS
 from .lazy import LazyNumpyTensor
 
 import numpy as np
@@ -520,6 +520,42 @@ class Q4_K(__Quant, qtype=GGMLQuantizationType.Q4_K):
         qs = (qs & np.uint8(0x0F)).reshape((n_blocks, -1, 32)).astype(np.float32)
 
         return (d * qs - dm).reshape((n_blocks, QK_K))
+
+
+class Q4_K_F(__Quant, qtype=GGMLQuantizationType.Q4_K_F):
+    K_SCALE_SIZE = 12
+
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        d, rest = np.hsplit(blocks, [2])
+        dmin, rest = np.hsplit(rest, [2])
+        scales, rest = np.hsplit(rest, [cls.K_SCALE_SIZE])
+        qs, rest = np.hsplit(rest, [QK_K // 2])
+        out_idx, out_val = np.hsplit(rest, [Q4_K_F_OUTLIERS * 2])
+
+        d = d.view(np.float16).astype(np.float32)
+        dmin = dmin.view(np.float16).astype(np.float32)
+
+        sc, m = Q4_K.get_scale_min(scales)
+
+        d = (d * sc.astype(np.float32)).reshape((n_blocks, -1, 1))
+        dm = (dmin * m.astype(np.float32)).reshape((n_blocks, -1, 1))
+
+        qs = qs.reshape((n_blocks, -1, 1, 32)) >> np.array([0, 4], dtype=np.uint8).reshape((1, 1, 2, 1))
+        qs = (qs & np.uint8(0x0F)).reshape((n_blocks, -1, 32)).astype(np.float32)
+
+        base = (d * qs - dm).reshape((n_blocks, QK_K))
+
+        out_idx = out_idx.view(np.uint16).reshape((n_blocks, Q4_K_F_OUTLIERS))
+        out_val = out_val.view(np.float16).astype(np.float32).reshape((n_blocks, Q4_K_F_OUTLIERS))
+
+        rows = np.repeat(np.arange(n_blocks)[:, None], Q4_K_F_OUTLIERS, axis=1)
+        mask = out_idx < QK_K
+        base[rows[mask], out_idx[mask]] += out_val[mask]
+
+        return base
 
 
 class Q5_K(__Quant, qtype=GGMLQuantizationType.Q5_K):

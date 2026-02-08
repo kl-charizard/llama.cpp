@@ -44,6 +44,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q3_K_L:   return "Q3_K - Large";
         case LLAMA_FTYPE_MOSTLY_Q4_K_S:   return "Q4_K - Small";
         case LLAMA_FTYPE_MOSTLY_Q4_K_M:   return "Q4_K - Medium";
+        case LLAMA_FTYPE_MOSTLY_Q4_K_F:   return "Q4_K - Fused";
         case LLAMA_FTYPE_MOSTLY_Q5_K_S:   return "Q5_K - Small";
         case LLAMA_FTYPE_MOSTLY_Q5_K_M:   return "Q5_K - Medium";
         case LLAMA_FTYPE_MOSTLY_Q6_K:     return "Q6_K";
@@ -385,6 +386,7 @@ namespace GGUFMeta {
     }
 
     template bool llama_model_loader::get_arr<std::vector<std::string>>(enum llm_kv kid, std::vector<std::string> & result, bool required);
+    template bool llama_model_loader::get_arr<uint32_t>(const std::string & key, std::vector<uint32_t> & result, bool required);
 
     template<typename T>
     bool llama_model_loader::get_key(const std::string & key, T & result, bool required) {
@@ -696,6 +698,7 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_Q2_K:    ftype = LLAMA_FTYPE_MOSTLY_Q2_K;    break;
             case GGML_TYPE_Q3_K:    ftype = LLAMA_FTYPE_MOSTLY_Q3_K_M;  break;
             case GGML_TYPE_Q4_K:    ftype = LLAMA_FTYPE_MOSTLY_Q4_K_M;  break;
+            case GGML_TYPE_Q4_K_F:  ftype = LLAMA_FTYPE_MOSTLY_Q4_K_F;  break;
             case GGML_TYPE_Q5_K:    ftype = LLAMA_FTYPE_MOSTLY_Q5_K_M;  break;
             case GGML_TYPE_Q6_K:    ftype = LLAMA_FTYPE_MOSTLY_Q6_K;    break;
             case GGML_TYPE_TQ1_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ1_0;   break;
