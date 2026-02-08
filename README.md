@@ -111,15 +111,48 @@ AWQ (Activation-aware Weight Quantization) protects a small fraction of weight c
 
 ## Performance Characteristics
 
-Based on testing with Llama-3-8B:
+### Model Sizes (LFM2.5-1.2B-Instruct)
 
-| Format | Size (GiB) | Notes |
-|--------|-----------|-------|
-| Q4_K_M | ~4.58 | Standard 4-bit quantization |
-| Q4_K_F | ~4.58 | Outlier-aware, improved accuracy |
-| Q4_K_F + AWQ | ~4.58-4.7 | With 1% channel protection |
+| Format | Size | Notes |
+|--------|------|-------|
+| F16 (baseline) | 2.34 GB | Original full precision |
+| Q4_K_M | 730.9 MB | Standard 4-bit quantization |
+| Q4_K_F | 787.1 MB | Outlier-aware, improved accuracy |
+| Q4_K_F + AWQ | 804.8 MB | With 1% channel protection |
+| Q5_K_S | 825.3 MB | 5-bit quantization (small) |
+| Q5_K_M | 843.4 MB | 5-bit quantization (medium) |
 
-**Note**: Q4_K_F provides better perplexity and quality metrics compared to Q4_K_M, with similar model size and inference speed.
+### Perplexity vs F16 (baseline)
+
+Tested on LFM2.5-1.2B-Instruct model:
+
+| Metric | F16 | Q4_K_M | Δ vs F16 | % vs F16 | Q4_K_F | Δ vs F16 | % vs F16 | Q5_K_M | Δ vs F16 | % vs F16 | Q5_K_S | Δ vs F16 | % vs F16 |
+|--------|-----|--------|----------|----------|--------|----------|----------|--------|----------|----------|--------|----------|----------|
+| Last (chunk 50) | 24.5452 | 26.7186 | 2.1734 | 8.85% | 25.5672 | 1.0220 | 4.16% | 25.4721 | 0.9269 | 3.78% | 25.8600 | 1.3148 | 5.36% |
+| Mean (all 50) | 28.0810 | 30.2387 | 2.1577 | 7.68% | 28.7362 | 0.6552 | 2.33% | 29.1374 | 1.0564 | 3.76% | 29.4770 | 1.3960 | 4.97% |
+| Mean (last 10) | 24.5120 | 26.7509 | 2.2390 | 9.13% | 25.4779 | 0.9659 | 3.94% | 25.4378 | 0.9258 | 3.78% | 25.8056 | 1.2936 | 5.28% |
+| Mean (last 20) | 24.7377 | 26.9298 | 2.1921 | 8.86% | 25.6638 | 0.9261 | 3.74% | 25.6669 | 0.9292 | 3.76% | 26.0244 | 1.2867 | 5.20% |
+
+**Key Observations:**
+- **Q4_K_F** significantly outperforms **Q4_K_M** across all metrics, with only ~7.7% size increase
+- **Q4_K_F** achieves perplexity within **2.33-4.16%** of F16 baseline, compared to **7.68-9.13%** for Q4_K_M
+- **Q4_K_F** performs comparably to **Q5_K_M** while using less memory (787.1 MB vs 843.4 MB)
+
+### GSM8K Evaluation (100 questions)
+
+Tested on LFM2.5-1.2B-Instruct model:
+
+| Format | Score | Accuracy |
+|--------|-------|----------|
+| F16 (baseline) | 68/100 | 0.6800 |
+| Q4_K_F + AWQ | 68/100 | 0.6800 |
+| Q4_K_F | 67/100 | 0.6700 |
+| Q4_K_M | 64/100 | 0.6400 |
+
+**Key Observations:**
+- **Q4_K_F + AWQ** matches F16 baseline performance (68/100)
+- **Q4_K_F** achieves 98.5% of F16 accuracy (67/100 vs 68/100)
+- **Q4_K_M** shows 6% accuracy drop compared to F16 (64/100 vs 68/100)
 
 ## Technical Details
 
